@@ -13,7 +13,7 @@
   "d1_databases": [{
     "binding": "DB",
     "database_name": "cloud-clipboard",
-    "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+    "database_id": "YOUR_D1_DATABASE_ID",
     "migrations_dir": "./migrations"
   }],
   "r2_buckets": [{
@@ -21,7 +21,7 @@
     "bucket_name": "cloud-clipboard"
   }],
   "vars": {
-    "R2_ACCOUNT_ID": "REPLACE_WITH_ACCOUNT_ID",
+    "R2_ACCOUNT_ID": "YOUR_CLOUDFLARE_ACCOUNT_ID",
     "R2_BUCKET_NAME": "cloud-clipboard",
     "RETENTION_SECONDS": "86400",
     "MAX_FILE_BYTES": "5368709120"
