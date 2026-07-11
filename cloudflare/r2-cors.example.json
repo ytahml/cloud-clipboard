@@ -1,0 +1,13 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": ["https://REPLACE_WITH_YOUR_DOMAIN"],
+        "methods": ["GET", "PUT", "HEAD"],
+        "headers": ["Content-Type"]
+      },
+      "exposeHeaders": ["ETag"],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}
