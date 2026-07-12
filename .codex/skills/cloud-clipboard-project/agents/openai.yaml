@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cloud Clipboard Project"
+  short_description: "Maintain and deploy the Cloud Clipboard project"
+  default_prompt: "Use $cloud-clipboard-project to inspect, maintain, test, or deploy this project safely."
