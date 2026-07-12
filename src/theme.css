@@ -4,6 +4,19 @@
   gap: 8px;
 }
 
+.connection {
+  min-height: 42px;
+  padding-block: 7px;
+}
+
+.connection .connection-compact {
+  display: none;
+}
+
+.connection span.connection-detail {
+  display: block;
+}
+
 .theme-toggle {
   display: grid;
   place-items: center;
@@ -132,4 +145,25 @@
 
 @media (max-width: 760px) {
   .theme-toggle { width: 40px; height: 40px; }
+
+  .connection {
+    width: 68px;
+    height: 40px;
+    min-height: 40px;
+    justify-content: center;
+    gap: 8px;
+    padding: 0 10px;
+  }
+
+  .connection span.connection-detail { display: none; }
+  .connection .connection-compact { display: block; font-size: 11px; }
+}
+
+@media (max-width: 420px) {
+  .connection {
+    width: 40px;
+    padding: 0;
+  }
+
+  .connection .connection-compact { display: none; }
 }
