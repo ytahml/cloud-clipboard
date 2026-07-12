@@ -1,0 +1,70 @@
+name: Package dashboard deployment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build Pages Direct Upload ZIP
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check and build web assets
+        run: |
+          npm run typecheck
+          npm run build
+
+      - name: Bundle the Pages advanced-mode Worker
+        run: |
+          mkdir -p dashboard-package
+          npx wrangler deploy --dry-run --outfile dashboard-package/_worker.js
+          cp -R dist/. dashboard-package/
+
+      - name: Validate package contents
+        run: |
+          test -f dashboard-package/index.html
+          test -f dashboard-package/_worker.js
+          test -n "$(find dashboard-package/assets -type f -print -quit)"
+          test ! -e dashboard-package/.dev.vars
+          test ! -e dashboard-package/wrangler.jsonc
+          test ! -e dashboard-package/migrations
+
+      - name: Create ZIP
+        run: |
+          cd dashboard-package
+          zip -r ../cloud-clipboard-pages.zip .
+
+      - name: Inspect ZIP
+        run: |
+          unzip -t cloud-clipboard-pages.zip
+          unzip -Z1 cloud-clipboard-pages.zip | grep -qx 'index.html'
+          unzip -Z1 cloud-clipboard-pages.zip | grep -qx '_worker.js'
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-clipboard-pages-${{ github.ref_name }}
+          path: cloud-clipboard-pages.zip
+          if-no-files-found: error
+          retention-days: 30
