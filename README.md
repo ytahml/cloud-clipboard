@@ -100,7 +100,7 @@ npx wrangler deploy
 
 #### 4. 配置 R2 CORS
 
-复制示例并将来源替换为真实 Worker 地址和最终自定义域名：
+复制示例并将来源替换为每个实际使用的浏览器 Origin。生成的 `cloudflare/r2-cors.json` 是包含环境专属域名的本地文件，已被 Git 忽略，不要提交：
 
 ```bash
 cp cloudflare/r2-cors.example.json cloudflare/r2-cors.json
@@ -219,7 +219,7 @@ Open <http://localhost:8787>. Placeholder R2 credentials are sufficient for UI a
 
 5. Immediately protect the entire Worker with a Cloudflare Access Self-hosted Application and an email-restricted Allow policy.
 
-6. Copy `cloudflare/r2-cors.example.json` to `cloudflare/r2-cors.json`, replace its origins, and apply it:
+6. Copy `cloudflare/r2-cors.example.json` to the Git-ignored local file `cloudflare/r2-cors.json`, replace its origins with every browser origin actually in use, and apply it. Do not commit the generated environment-specific file:
 
    ```bash
    npx wrangler r2 bucket cors set cloud-clipboard --file cloudflare/r2-cors.json

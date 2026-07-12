@@ -47,7 +47,7 @@ After deployment, record the version ID in the handoff. Never infer that a succe
 
 ## CORS updates
 
-Update `cloudflare/r2-cors.json` whenever the production origin changes, then run:
+Create the ignored local `cloudflare/r2-cors.json` from the tracked example, update it whenever the production origin changes, then run:
 
 ```bash
 npx wrangler r2 bucket cors set cloud-clipboard --file cloudflare/r2-cors.json --force

@@ -4,6 +4,7 @@ data
 .dev.vars
 .env
 .wrangler
+/cloudflare/r2-cors.json
 *.log
 *.tsbuildinfo
 .DS_Store
