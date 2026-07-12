@@ -1,25 +1,46 @@
-name: Package dashboard deployment
+name: Release dashboard deployment
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (must start with v, for example v0.1.0)
+        required: true
+        type: string
   push:
-    branches:
-      - main
     tags:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+concurrency:
+  group: dashboard-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   package:
-    name: Build Pages Direct Upload ZIP
+    name: Build and release Pages Direct Upload ZIP
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Validate release tag
+        run: |
+          case "$RELEASE_TAG" in
+            v*) ;;
+            *) echo "Release tag must start with v: $RELEASE_TAG" >&2; exit 1 ;;
+          esac
+          git rev-parse --verify "refs/tags/$RELEASE_TAG"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -60,11 +81,22 @@ jobs:
           unzip -t cloud-clipboard-pages.zip
           unzip -Z1 cloud-clipboard-pages.zip | grep -qx 'index.html'
           unzip -Z1 cloud-clipboard-pages.zip | grep -qx '_worker.js'
+          sha256sum cloud-clipboard-pages.zip > cloud-clipboard-pages.zip.sha256
 
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloud-clipboard-pages-${{ github.ref_name }}
-          path: cloud-clipboard-pages.zip
-          if-no-files-found: error
-          retention-days: 30
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              cloud-clipboard-pages.zip \
+              cloud-clipboard-pages.zip.sha256 \
+              --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              cloud-clipboard-pages.zip \
+              cloud-clipboard-pages.zip.sha256 \
+              --title "$RELEASE_TAG" \
+              --generate-notes \
+              --verify-tag
+          fi
