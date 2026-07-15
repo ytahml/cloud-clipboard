@@ -81,7 +81,7 @@ npx wrangler r2 bucket create cloud-clipboard
 }
 ```
 
-仓库中的 ID 属于当前维护者账号；部署到其他账号时必须替换。
+仓库配置使用占位 ID；部署前必须替换为当前 Cloudflare 账号与 D1 数据库的实际 ID。
 
 #### 2. 初始化数据库和生命周期
 
@@ -261,4 +261,6 @@ It contains the maintenance workflow and routes agents to architecture, operatio
 
 ## License
 
-No license has been selected yet. All rights are reserved until a license file is added.
+This project is available under the [MIT License](LICENSE).
+
+本项目采用 [MIT 开源协议](LICENSE)。
