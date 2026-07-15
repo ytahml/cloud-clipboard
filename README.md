@@ -56,6 +56,8 @@ npm run cf:dev
 
 ### Cloudflare 快速部署
 
+如果希望完全通过 Cloudflare 控制台部署，请使用 GitHub Actions 生成的 Pages Direct Upload ZIP，并按[界面部署指南](docs/cloudflare-dashboard-deployment.zh-CN.md)操作。ZIP 只包含预构建代码；D1、R2、Secrets、CORS 和 Access 仍需在控制台逐项配置。
+
 #### 1. 登录并创建资源
 
 ```bash
