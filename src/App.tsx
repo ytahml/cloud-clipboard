@@ -59,8 +59,8 @@ export function App() {
     </header>
 
     <section className="intro" aria-labelledby="page-title">
-      <div><p className="eyebrow"><ShieldCheck size={14} /> PRIVATE TRANSFER SPACE</p><h1 id="page-title">把内容放在这里，<em>另一台设备即刻取走。</em></h1></div>
-      <p className="intro-copy">一个只属于你的临时中转空间。文本自动同步，文件私密传输，所有内容将在 24 小时后清理。</p>
+      <h1 id="page-title">文本和文件，<em>换台设备继续使用。</em></h1>
+      <p className="intro-copy">文本自动同步，文件私密中转，所有内容会在 24 小时后清理。</p>
     </section>
 
     <div className="workspace-grid">
@@ -77,10 +77,10 @@ export function App() {
       </section>
 
       <section className="card files-card" aria-labelledby="files-title">
-        <div className="card-title"><span><span className="section-icon" aria-hidden="true"><Cloud size={18} /></span><span><b id="files-title">文件中转站</b><small>支持拖放与粘贴截图</small></span></span><span className="count-badge">{data.files.length}</span></div>
+        <div className="card-title"><span><span className="section-icon" aria-hidden="true"><Cloud size={18} /></span><span><b id="files-title">文件中转站</b><small>支持拖放与粘贴截图</small></span></span><small className="file-count">{data.files.length} 个文件</small></div>
         <label className={`dropzone ${dragging ? "active" : ""}`} onDragLeave={() => setDragging(false)}>
           <input type="file" multiple aria-label="选择要上传的文件" onChange={(event) => void uploadFiles([...(event.target.files ?? [])])} />
-          <span className="upload-icon" aria-hidden="true"><Upload size={22} /></span><b>{dragging ? "松开，开始上传" : "拖放文件到这里"}</b><small><span>点击选择文件</span>，也可以直接粘贴截图</small>
+          <span className="upload-icon" aria-hidden="true"><Upload size={22} /></span><span className="dropzone-copy"><b>{dragging ? "松开，开始上传" : "拖放文件到这里"}</b><small><span>点击选择文件</span>，也可以直接粘贴截图</small></span>
         </label>
         <div className="transfer-list" aria-live="polite">
           {Object.entries(uploads).map(([name, progress]) => <div className="uploading" key={name}><LoaderCircle size={18} /><span><b>{name}</b><i><em style={{ width: `${progress * 100}%` }} /></i></span><small>{Math.round(progress * 100)}%</small></div>)}
@@ -100,6 +100,6 @@ export function App() {
       </section>
     </div>
 
-    <footer><span><ShieldCheck size={13} /> 私有空间</span><span>24 小时自动清理</span><span>不记录访问轨迹</span></footer>
+    <footer><span><ShieldCheck size={13} /> 私有访问</span><span>24 小时自动清理</span><span>文件私密存储</span></footer>
   </main>;
 }
