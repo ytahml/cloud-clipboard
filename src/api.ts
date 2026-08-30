@@ -1,14 +1,20 @@
 import type { Snapshot } from "./types";
 
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) { super(message); }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, { ...init, headers: { "content-type": "application/json", ...init?.headers } });
-  if (!response.ok) throw new Error((await response.json().catch(() => null))?.error ?? `请求失败 (${response.status})`);
+  if (!response.ok) throw new ApiError((await response.json().catch(() => null))?.error ?? `请求失败 (${response.status})`, response.status);
   return response.json() as Promise<T>;
 }
 
 export const api = {
   snapshot: () => request<Snapshot>("/snapshot"),
-  saveClip: (content: string) => request("/clips", { method: "POST", body: JSON.stringify({ content }) }),
+  saveClip: (content: string) => request<{ id: string }>("/clips", { method: "POST", body: JSON.stringify({ content }) }),
+  updateClip: (id: string, content: string) => request<{ id: string }>(`/clips/${id}`, { method: "PATCH", body: JSON.stringify({ content }) }),
+  deleteClip: (id: string) => request(`/clips/${id}`, { method: "DELETE" }),
   clearClips: () => request("/clips", { method: "DELETE" }),
   deleteFile: (id: string) => request(`/files/${id}`, { method: "DELETE" }),
   upload: async (file: File, onProgress: (value: number) => void) => {

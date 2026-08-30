@@ -10,7 +10,7 @@ A private cross-device clipboard and temporary file transfer app built on Cloudf
 
 ### 功能
 
-- 最近 3 条文本记录，输入后自动同步
+- 最多 20 条文本记录，支持列表浏览、自动同步和单条删除
 - 文件选择、拖拽和粘贴上传
 - 上传进度、下载、复制链接和手动删除
 - 文本与文件默认 24 小时后过期
@@ -143,7 +143,7 @@ npx wrangler r2 bucket cors list cloud-clipboard
 线上验收：
 
 1. 未登录访问应跳转到 Cloudflare Access。
-2. 登录后保存 3 条文本，刷新页面后仍按新到旧显示。
+2. 登录后新建并编辑多条文本，确认同一轮编辑只更新当前记录，刷新后列表仍按新到旧显示。
 3. 上传一个无敏感内容的小文件，确认进度结束且文件进入列表。
 4. 下载文件并核对内容。
 5. 删除文件并确认列表更新。
@@ -169,7 +169,7 @@ npx wrangler r2 bucket cors list cloud-clipboard
 
 ### Features
 
-- Keep the three most recent clipboard entries with automatic sync
+- Keep up to 20 clipboard entries with list browsing, automatic sync, and per-item deletion
 - Upload files by picker, drag and drop, or clipboard paste
 - Show progress; download, copy links, and delete files
 - Expire clipboard entries and files after 24 hours by default

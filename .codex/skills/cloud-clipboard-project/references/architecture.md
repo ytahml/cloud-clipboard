@@ -2,7 +2,7 @@
 
 ## Product scope
 
-Cloud Clipboard is a private, temporary, shared transfer space for authorized users. The first release uses one shared workspace for every email allowed by Cloudflare Access. It stores the three newest clipboard entries and temporary files for 24 hours.
+Cloud Clipboard is a private, temporary, shared transfer space for authorized users. The first release uses one shared workspace for every email allowed by Cloudflare Access. It stores up to 20 clipboard entries and temporary files for 24 hours.
 
 ## Components
 
@@ -19,11 +19,12 @@ Cloud Clipboard is a private, temporary, shared transfer space for authorized us
 
 ### Clipboard
 
-1. UI debounces edits for 550 ms.
-2. `POST /api/clips` validates a string payload and limits UTF-8 size to 1 MB.
-3. Worker inserts a row with a 24-hour expiry.
-4. Worker retains only the newest three rows.
-5. `GET /api/snapshot` filters expired rows and returns newest first.
+1. UI debounces edits for 550 ms and updates the active entry instead of creating intermediate versions.
+2. `POST /api/clips` creates or promotes an entry, while `PATCH /api/clips/:id` updates the active editing session; both validate non-empty strings and limit UTF-8 size to 1 MB.
+3. Re-saving identical content promotes the existing row and refreshes its 24-hour expiry rather than creating a duplicate.
+4. Worker retains only the newest 20 rows.
+5. `GET /api/snapshot` filters expired rows and returns newest first; visible clients refresh every five seconds without replacing an in-progress editor.
+6. `DELETE /api/clips/:id` removes one entry, while `DELETE /api/clips` clears clipboard entries without affecting files.
 
 ### Upload
 

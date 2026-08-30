@@ -3,9 +3,19 @@ import { AwsClient } from "aws4fetch";
 type FileRow = { id: string; object_key: string; name: string; size: number; content_type: string; created_at: number; expires_at: number };
 type ClipRow = { id: string; content: string; created_at: number; expires_at: number };
 
+const CLIP_LIMIT = 20;
+
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 const iso = (unix: number) => new Date(unix * 1000).toISOString();
 const safeName = (name: string) => name.replace(/[\u0000-\u001f/\\]/g, "_").slice(0, 240) || "unnamed";
+
+async function clipContent(request: Request): Promise<string | Response> {
+  const body = await request.json<{ content?: unknown }>();
+  if (typeof body.content !== "string") return json({ error: "文本格式无效" }, 400);
+  if (!body.content.trim()) return json({ error: "文本不能为空" }, 400);
+  if (new TextEncoder().encode(body.content).byteLength > 1_000_000) return json({ error: "文本不能超过 1 MB" }, 413);
+  return body.content;
+}
 
 function config(env: Env) {
   return {
@@ -44,7 +54,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 
   if (path === "/api/snapshot" && request.method === "GET") {
     const [clips, files] = await Promise.all([
-      env.DB.prepare("SELECT id, content, created_at, expires_at FROM clips WHERE expires_at > ? ORDER BY created_at DESC, rowid DESC LIMIT 3").bind(now).all<ClipRow>(),
+      env.DB.prepare("SELECT id, content, created_at, expires_at FROM clips WHERE expires_at > ? ORDER BY created_at DESC, rowid DESC LIMIT ?").bind(now, CLIP_LIMIT).all<ClipRow>(),
       env.DB.prepare("SELECT id, object_key, name, size, content_type, created_at, expires_at FROM files WHERE status = 'ready' AND expires_at > ? ORDER BY created_at DESC").bind(now).all<FileRow>(),
     ]);
     return json({
@@ -56,19 +66,50 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   }
 
   if (path === "/api/clips" && request.method === "POST") {
-    const body = await request.json<{ content?: unknown }>();
-    if (typeof body.content !== "string") return json({ error: "文本格式无效" }, 400);
-    if (new TextEncoder().encode(body.content).byteLength > 1_000_000) return json({ error: "文本不能超过 1 MB" }, 413);
-    if (!body.content.trim()) { await env.DB.prepare("DELETE FROM clips").run(); return json({ ok: true }); }
+    const content = await clipContent(request);
+    if (content instanceof Response) return content;
+    const existing = await env.DB.prepare("SELECT id FROM clips WHERE content = ? AND expires_at > ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .bind(content, now).first<{ id: string }>();
+    if (existing) {
+      await env.DB.batch([
+        env.DB.prepare("INSERT OR REPLACE INTO clips (id, content, created_at, expires_at) VALUES (?, ?, ?, ?)").bind(existing.id, content, now, now + config(env).retention),
+        env.DB.prepare("DELETE FROM clips WHERE content = ? AND id != ?").bind(content, existing.id),
+      ]);
+      return json({ id: existing.id });
+    }
     const id = crypto.randomUUID();
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO clips (id, content, created_at, expires_at) VALUES (?, ?, ?, ?)").bind(id, body.content, now, now + config(env).retention),
-      env.DB.prepare("DELETE FROM clips WHERE id NOT IN (SELECT id FROM clips ORDER BY created_at DESC, rowid DESC LIMIT 3)"),
+      env.DB.prepare("INSERT INTO clips (id, content, created_at, expires_at) VALUES (?, ?, ?, ?)").bind(id, content, now, now + config(env).retention),
+      env.DB.prepare("DELETE FROM clips WHERE id NOT IN (SELECT id FROM clips ORDER BY created_at DESC, rowid DESC LIMIT ?)").bind(CLIP_LIMIT),
     ]);
     return json({ id }, 201);
   }
 
   if (path === "/api/clips" && request.method === "DELETE") { await env.DB.prepare("DELETE FROM clips").run(); return json({ ok: true }); }
+
+  const clip = path.match(/^\/api\/clips\/([^/]+)$/);
+  if (clip && request.method === "PATCH") {
+    const content = await clipContent(request);
+    if (content instanceof Response) return content;
+    const existing = await env.DB.prepare("SELECT id FROM clips WHERE content = ? AND id != ? AND expires_at > ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .bind(content, clip[1], now).first<{ id: string }>();
+    if (existing) {
+      await env.DB.batch([
+        env.DB.prepare("INSERT OR REPLACE INTO clips (id, content, created_at, expires_at) VALUES (?, ?, ?, ?)").bind(existing.id, content, now, now + config(env).retention),
+        env.DB.prepare("DELETE FROM clips WHERE id = ? OR (content = ? AND id != ?)").bind(clip[1], content, existing.id),
+      ]);
+      return json({ id: existing.id });
+    }
+    const result = await env.DB.prepare("UPDATE clips SET content = ?, expires_at = ? WHERE id = ? AND expires_at > ?")
+      .bind(content, now + config(env).retention, clip[1], now).run();
+    if (result.meta.changes === 0) return json({ error: "剪切板记录不存在或已过期" }, 404);
+    return json({ id: clip[1] });
+  }
+  if (clip && request.method === "DELETE") {
+    const result = await env.DB.prepare("DELETE FROM clips WHERE id = ?").bind(clip[1]).run();
+    if (result.meta.changes === 0) return json({ error: "剪切板记录不存在" }, 404);
+    return json({ ok: true });
+  }
 
   if (path === "/api/files/upload-ticket" && request.method === "POST") {
     const body = await request.json<{ name?: unknown; size?: unknown; type?: unknown }>();
