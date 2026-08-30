@@ -1,44 +1,17 @@
 .clip-history {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 9px 18px;
-  border-top: 1px solid #202229;
-  overflow: auto;
-}
-
-.clip-history > small {
-  flex: 0 0 auto;
-  color: #666874;
-  font-size: 9px;
-}
-
-.clip-history button {
-  display: flex;
-  min-width: 0;
-  max-width: 180px;
   gap: 8px;
-  padding: 7px 9px;
-  border: 1px solid #292b34;
-  border-radius: 8px;
-  color: #92949f;
-  background: #18191f;
-  cursor: pointer;
+  padding: 10px 18px;
+  overflow-x: auto;
+  border-top: 1px solid var(--border-soft);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
-.clip-history button:hover {
-  border-color: #3b3d48;
-  color: #d4d5da;
-}
-
-.clip-history button span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 9px;
-}
-
-.clip-history time {
-  color: #5f616c;
-  font-size: 8px;
-}
+.clip-history > small { flex: 0 0 auto; color: var(--text-tertiary); font-size: 9px; }
+.clip-history button { display: flex; min-width: 0; max-width: 210px; min-height: 36px; align-items: center; gap: 9px; padding: 0 10px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-secondary); background: var(--surface-soft); cursor: pointer; transition: color .18s ease, border-color .18s ease, background .18s ease; }
+.clip-history button:hover { border-color: var(--text-tertiary); color: var(--text-primary); background: var(--surface-hover); }
+.clip-history button:focus-visible { outline: none; box-shadow: var(--focus); }
+.clip-history button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.clip-history time { flex: 0 0 auto; color: var(--text-tertiary); font: 8px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
