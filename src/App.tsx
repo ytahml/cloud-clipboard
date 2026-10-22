@@ -216,14 +216,15 @@ export function App() {
     schedulePersist();
   };
 
-  const flushPending = async () => {
+  const flushPending = useCallback(async () => {
     window.clearTimeout(saveTimer.current);
-    if (savePromise.current) {
-      const saved = await savePromise.current;
+    window.clearTimeout(retryTimer.current);
+    while (savePromise.current || pendingDraft.current !== null) {
+      const saved = await persistRef.current();
       if (!saved) return false;
     }
-    return pendingDraft.current === null ? true : persistRef.current();
-  };
+    return true;
+  }, []);
 
   const openClip = async (clip: Clip) => {
     if (!await flushPending()) return;
@@ -259,11 +260,24 @@ export function App() {
 
   const finalizeDelete = useCallback(async (pending: PendingDelete) => {
     if (pendingDeleteRef.current?.clip.id !== pending.clip.id) return;
+    if (!await flushPending()) {
+      if (pendingDeleteRef.current?.clip.id === pending.clip.id) {
+        pendingDeleteRef.current = undefined;
+        setPendingDelete(undefined);
+      }
+      return;
+    }
+    // Undo remains available while a slow save is finishing.
+    if (pendingDeleteRef.current?.clip.id !== pending.clip.id) return;
     pendingDeleteRef.current = undefined;
     setPendingDelete(undefined);
+    if (activeIdRef.current === pending.clip.id) {
+      activeIdRef.current = undefined;
+      setEditorMode("history");
+    }
     try { await api.deleteClip(pending.clip.id); await refresh(false, true); }
     catch (error) { setStatus(error instanceof Error ? `删除失败：${error.message}` : "删除失败"); await refresh(false); }
-  }, [refresh]);
+  }, [flushPending, refresh]);
 
   const beginDelete = (clip: Clip) => {
     if (pendingDeleteRef.current) return;
