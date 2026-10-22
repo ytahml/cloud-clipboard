@@ -44,6 +44,8 @@ export function App() {
   const [openMenu, setOpenMenu] = useState<string>();
 
   const initialized = useRef(false);
+  const refreshSequence = useRef(0);
+  const settledRefresh = useRef(0);
   const newestId = useRef<string | undefined>(undefined);
   const selectedIdRef = useRef<string | undefined>(undefined);
   const activeIdRef = useRef<string | undefined>(undefined);
@@ -95,9 +97,19 @@ export function App() {
     newestId.current = next.clips[0]?.id;
   }, []);
 
-  const refresh = useCallback(async (announceRemote = false) => {
-    try { applySnapshot(await api.snapshot(), announceRemote); }
+  const refresh = useCallback(async (announceRemote = false, afterMutation = false) => {
+    const sequence = ++refreshSequence.current;
+    // A completed write invalidates snapshots requested before that write.
+    if (afterMutation) settledRefresh.current = sequence;
+    try {
+      const next = await api.snapshot();
+      if (sequence < settledRefresh.current) return;
+      settledRefresh.current = sequence;
+      applySnapshot(next, announceRemote);
+    }
     catch (error) {
+      if (sequence < settledRefresh.current) return;
+      settledRefresh.current = sequence;
       setConnected(false);
       setStatus(error instanceof Error ? error.message : "连接失败");
     }
@@ -152,7 +164,7 @@ export function App() {
         setEditorMode("saved");
         setConnected(true);
         setStatus(wasForked ? "已基于历史创建新记录" : "已同步");
-        await refresh(false);
+        await refresh(false, true);
         return true;
       } catch (error) {
         const retryable = !(error instanceof ApiError) || error.status >= 500;
@@ -189,6 +201,7 @@ export function App() {
   }, []);
 
   const queueSave = (value: string) => {
+    initialized.current = true;
     setText(value);
     if (editorModeRef.current === "history" || editorModeRef.current === "expired") {
       activeIdRef.current = undefined;
@@ -227,6 +240,7 @@ export function App() {
 
   const startNew = async () => {
     if (!await flushPending()) return;
+    initialized.current = true;
     setText("");
     activeIdRef.current = undefined;
     forkedFromHistory.current = false;
@@ -247,7 +261,7 @@ export function App() {
     if (pendingDeleteRef.current?.clip.id !== pending.clip.id) return;
     pendingDeleteRef.current = undefined;
     setPendingDelete(undefined);
-    try { await api.deleteClip(pending.clip.id); await refresh(false); }
+    try { await api.deleteClip(pending.clip.id); await refresh(false, true); }
     catch (error) { setStatus(error instanceof Error ? `删除失败：${error.message}` : "删除失败"); await refresh(false); }
   }, [refresh]);
 
@@ -288,6 +302,7 @@ export function App() {
     setConfirmClear(false);
     try {
       await api.clearClips();
+      settledRefresh.current = ++refreshSequence.current;
       setData((current) => ({ ...current, clips: [] }));
       setText("");
       activeIdRef.current = undefined;
@@ -300,7 +315,7 @@ export function App() {
   const uploadFiles = async (files: File[]) => {
     for (const file of files) {
       setUploads((old) => ({ ...old, [file.name]: 0 }));
-      try { await api.upload(file, (progress) => setUploads((old) => ({ ...old, [file.name]: progress }))); await refresh(false); }
+      try { await api.upload(file, (progress) => setUploads((old) => ({ ...old, [file.name]: progress }))); await refresh(false, true); }
       catch (error) { setStatus(error instanceof Error ? error.message : "上传失败"); }
       finally { setUploads((old) => { const next = { ...old }; delete next[file.name]; return next; }); }
     }
@@ -388,7 +403,7 @@ export function App() {
                 <div className="file-actions">
                   <button aria-label={`复制 ${file.name} 的下载链接`} title="复制下载链接" onClick={async () => { await navigator.clipboard.writeText(new URL(api.downloadUrl(file.id), location.href).href); setCopiedLink(file.id); window.setTimeout(() => setCopiedLink(undefined), 1_200); }}>{copiedLink === file.id ? <Check size={17} /> : <Link size={17} />}</button>
                   <a aria-label={`下载 ${file.name}`} title="下载" href={api.downloadUrl(file.id)}><Download size={17} /></a>
-                  <button aria-label={`删除 ${file.name}`} title="删除" onClick={() => api.deleteFile(file.id).then(() => refresh(false))}><X size={17} /></button>
+                  <button aria-label={`删除 ${file.name}`} title="删除" onClick={() => api.deleteFile(file.id).then(() => refresh(false, true))}><X size={17} /></button>
                 </div>
               </article>)}
             </div>

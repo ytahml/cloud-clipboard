@@ -23,7 +23,7 @@ Cloud Clipboard is a private, temporary, shared transfer space for authorized us
 2. `POST /api/clips` creates or promotes an entry, while `PATCH /api/clips/:id` updates the active editing session; both validate non-empty strings and limit UTF-8 size to 1 MB.
 3. Re-saving identical content promotes the existing row and refreshes its 24-hour expiry rather than creating a duplicate.
 4. Worker retains only the newest 20 rows.
-5. `GET /api/snapshot` filters expired rows and returns newest first; visible clients refresh every five seconds without replacing an in-progress editor.
+5. `GET /api/snapshot` filters expired rows and returns newest first; visible clients refresh every five seconds without replacing an in-progress editor. Local typing or an explicit new record prevents first-load hydration. Responses older than a settled refresh or a completed local write are ignored.
 6. `DELETE /api/clips/:id` removes one entry, while `DELETE /api/clips` clears clipboard entries without affecting files.
 
 ### Upload
