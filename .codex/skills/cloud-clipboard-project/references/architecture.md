@@ -24,7 +24,7 @@ Cloud Clipboard is a private, temporary, shared transfer space for authorized us
 3. Re-saving identical content promotes the existing row and refreshes its 24-hour expiry rather than creating a duplicate.
 4. Worker retains only the newest 20 rows.
 5. `GET /api/snapshot` filters expired rows and returns newest first; visible clients refresh every five seconds without replacing an in-progress editor. Local typing or an explicit new record prevents first-load hydration. Responses older than a settled refresh or a completed local write are ignored.
-6. `DELETE /api/clips/:id` removes one entry, while `DELETE /api/clips` clears clipboard entries without affecting files. Single-entry deletion waits for pending saves after the undo window; undo remains available during that wait, and a failed save cancels deletion. Once deletion starts, further edits create a new entry instead of updating the deleted one.
+6. `DELETE /api/clips/:id` removes one entry, while `DELETE /api/clips` clears clipboard entries without affecting files. Single-entry deletion waits for pending saves after the undo window; undo remains available during that wait, and a failed save cancels deletion. Once deletion starts, further edits create a new entry instead of updating the deleted one. Clearing all entries flushes pending saves and temporarily locks text editing and record navigation until the request settles; a failed save cancels clearing.
 
 ### Upload
 
