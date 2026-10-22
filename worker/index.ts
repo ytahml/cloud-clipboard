@@ -88,19 +88,26 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   if (clip && request.method === "PATCH") {
     const content = await clipContent(request);
     if (content instanceof Response) return content;
-    const existing = await env.DB.prepare("SELECT id FROM clips WHERE content = ? AND id != ? AND expires_at > ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
-      .bind(content, clip[1], now).first<{ id: string }>();
-    if (existing) {
-      await env.DB.batch([
-        env.DB.prepare("INSERT OR REPLACE INTO clips (id, content, created_at, expires_at) VALUES (?, ?, ?, ?)").bind(existing.id, content, now, now + config(env).retention),
-        env.DB.prepare("DELETE FROM clips WHERE id = ? OR (content = ? AND id != ?)").bind(clip[1], content, existing.id),
-      ]);
-      return json({ id: existing.id });
-    }
-    const result = await env.DB.prepare("UPDATE clips SET content = ?, expires_at = ? WHERE id = ? AND expires_at > ?")
-      .bind(content, now + config(env).retention, clip[1], now).run();
-    if (result.meta.changes === 0) return json({ error: "剪切板记录不存在或已过期" }, 404);
-    return json({ id: clip[1] });
+    const expiresAt = now + config(env).retention;
+    const survivor = "SELECT id FROM clips WHERE content = ? AND expires_at > ? ORDER BY (id = ?) ASC, created_at DESC, rowid DESC LIMIT 1";
+    // Validate the target and merge matching history within one D1 transaction.
+    const results = await env.DB.batch<{ id: string }>([
+      env.DB.prepare("UPDATE clips SET content = ?, expires_at = ? WHERE id = ? AND expires_at > ?")
+        .bind(content, expiresAt, clip[1], now),
+      env.DB.prepare(`INSERT OR REPLACE INTO clips (id, content, created_at, expires_at)
+        SELECT id, content, ?, ? FROM clips WHERE content = ? AND id != ? AND expires_at > ?
+        AND EXISTS (SELECT 1 FROM clips WHERE id = ? AND expires_at > ?)
+        ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+        .bind(now, expiresAt, content, clip[1], now, clip[1], now),
+      env.DB.prepare(survivor).bind(content, now, clip[1]),
+      env.DB.prepare(`DELETE FROM clips WHERE content = ? AND id != (${survivor})
+        AND EXISTS (SELECT 1 FROM clips WHERE id = ? AND expires_at > ?)`)
+        .bind(content, content, now, clip[1], clip[1], now),
+    ]);
+    if (results[0].meta.changes === 0) return json({ error: "剪切板记录不存在或已过期" }, 404);
+    const saved = results[2].results[0];
+    if (!saved) throw new Error("Edited clip missing from transaction result");
+    return json({ id: saved.id });
   }
   if (clip && request.method === "DELETE") {
     const result = await env.DB.prepare("DELETE FROM clips WHERE id = ?").bind(clip[1]).run();

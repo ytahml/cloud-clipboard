@@ -20,6 +20,35 @@ async function snapshot() {
   return response.json() as Promise<{ clips: Array<{ id: string; content: string }> }>;
 }
 
+function interleaveDuplicateReads(database: D1Database): D1Database {
+  // Hold standalone duplicate reads until both requests have observed the same state.
+  // Keep each native D1 batch intact so the test preserves transaction semantics.
+  let reads = 0, releaseReads: () => void = () => {};
+  const bothReads = new Promise<void>((resolve) => { releaseReads = resolve; });
+  const originals = new WeakMap<D1PreparedStatement, D1PreparedStatement>();
+  function wrapStatement(statement: D1PreparedStatement, sql: string): D1PreparedStatement {
+    const wrapped = new Proxy(statement, { get(target, property) {
+      if (property === "bind") return (...values: unknown[]) => wrapStatement(target.bind(...values), sql);
+      if (property === "first" && sql.startsWith("SELECT id FROM clips WHERE content =")) return async () => {
+        const result = await target.first();
+        if (++reads === 2) releaseReads();
+        await bothReads;
+        return result;
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    originals.set(wrapped, statement);
+    return wrapped;
+  }
+  return new Proxy(database, { get(target, property) {
+    if (property === "prepare") return (sql: string) => wrapStatement(target.prepare(sql), sql);
+    if (property === "batch") return (statements: D1PreparedStatement[]) => target.batch(statements.map((statement) => originals.get(statement) ?? statement));
+    const value = Reflect.get(target, property);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+}
+
 describe("clipboard HTTP API", () => {
   beforeAll(async () => { await server.listen(); });
   beforeEach(async () => {
@@ -69,32 +98,7 @@ describe("clipboard HTTP API", () => {
   it("keeps distinct history when overlapping requests save the same new text", async () => {
     for (let index = 1; index <= 19; index += 1) await saveClip(`history-${index}`);
     const env = await worker.getEnv();
-    // Hold standalone duplicate reads until both requests have observed the same state.
-    // Keep each native D1 batch intact so the test preserves transaction semantics.
-    let reads = 0, releaseReads: () => void = () => {};
-    const bothReads = new Promise<void>((resolve) => { releaseReads = resolve; });
-    const originals = new WeakMap<D1PreparedStatement, D1PreparedStatement>();
-    function wrapStatement(statement: D1PreparedStatement, sql: string): D1PreparedStatement {
-      const wrapped = new Proxy(statement, { get(target, property) {
-        if (property === "bind") return (...values: unknown[]) => wrapStatement(target.bind(...values), sql);
-        if (property === "first" && sql.startsWith("SELECT id FROM clips WHERE content =")) return async () => {
-          const result = await target.first();
-          if (++reads === 2) releaseReads();
-          await bothReads;
-          return result;
-        };
-        const value = Reflect.get(target, property);
-        return typeof value === "function" ? value.bind(target) : value;
-      } });
-      originals.set(wrapped, statement);
-      return wrapped;
-    }
-    const DB = new Proxy(env.DB, { get(target, property) {
-      if (property === "prepare") return (sql: string) => wrapStatement(target.prepare(sql), sql);
-      if (property === "batch") return (statements: D1PreparedStatement[]) => target.batch(statements.map((statement) => originals.get(statement) ?? statement));
-      const value = Reflect.get(target, property);
-      return typeof value === "function" ? value.bind(target) : value;
-    } });
+    const DB = interleaveDuplicateReads(env.DB);
     const background: Promise<unknown>[] = [];
     const ctx = {
       waitUntil: (promise: Promise<unknown>) => { background.push(promise); }, passThroughOnException() {}, props: {},
@@ -150,6 +154,51 @@ describe("clipboard HTTP API", () => {
     const result = await snapshot();
     expect(result.clips).toEqual([
       expect.objectContaining({ id: history.body.id, content: "same content" }),
+    ]);
+  });
+
+  for (const target of ["missing", "expired"] as const) {
+    it(`rejects a ${target} edit target without refreshing matching history`, async () => {
+      const { DB } = await worker.getEnv();
+      const now = Math.floor(Date.now() / 1000);
+      await DB.prepare("INSERT INTO clips (id, content, created_at, expires_at) VALUES (?, ?, ?, ?)")
+        .bind("history", "same content", now - 20, now + 60).run();
+      if (target === "expired") {
+        await DB.prepare("INSERT INTO clips (id, content, created_at, expires_at) VALUES (?, ?, ?, ?)")
+          .bind("target", "old draft", now - 20, now - 1).run();
+      }
+      const before = await DB.prepare("SELECT * FROM clips WHERE id = ?").bind("history").first();
+      const response = await worker.fetch("http://clipboard.test/api/clips/target", {
+        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "same content" }),
+      });
+      expect(response.status).toBe(404);
+      expect(await DB.prepare("SELECT * FROM clips WHERE id = ?").bind("history").first()).toEqual(before);
+    });
+  }
+
+  it("merges overlapping edits to the same content in one transaction", async () => {
+    const first = await saveClip("first draft");
+    const second = await saveClip("second draft");
+    const env = await worker.getEnv();
+    const DB = interleaveDuplicateReads(env.DB);
+    const background: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil: (promise: Promise<unknown>) => { background.push(promise); }, passThroughOnException() {}, props: {},
+      get exports(): ExecutionContext["exports"] { throw new Error("unexpected exports access"); },
+      get tracing(): ExecutionContext["tracing"] { throw new Error("unexpected tracing access"); },
+    } satisfies ExecutionContext;
+    const edits = await Promise.all([first.body.id, second.body.id].map(async (id) => {
+      const request = new Request(`http://clipboard.test/api/clips/${id}`, {
+        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "shared text" }),
+      });
+      const response = await handler.fetch(request as Parameters<typeof handler.fetch>[0], { ...env, DB }, ctx);
+      return { response, body: await response.json() as { id: string } };
+    }));
+    await Promise.all(background);
+    expect(edits.map(({ response }) => response.status)).toEqual([200, 200]);
+    expect(new Set(edits.map(({ body }) => body.id)).size).toBe(1);
+    expect((await snapshot()).clips).toEqual([
+      expect.objectContaining({ id: edits[0].body.id, content: "shared text" }),
     ]);
   });
 
