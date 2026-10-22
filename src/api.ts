@@ -10,6 +10,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function completeUpload(id: string) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await request(`/files/${id}/complete`, { method: "POST" });
+      return;
+    } catch (error) {
+      if (attempt === 2 || (error instanceof ApiError && error.status < 500)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    }
+  }
+}
+
 export const api = {
   snapshot: () => request<Snapshot>("/snapshot"),
   saveClip: (content: string) => request<{ id: string }>("/clips", { method: "POST", body: JSON.stringify({ content }) }),
@@ -30,7 +42,7 @@ export const api = {
       xhr.onerror = () => reject(new Error("网络连接中断"));
       xhr.send(file);
     });
-    await request(`/files/${ticket.id}/complete`, { method: "POST" });
+    await completeUpload(ticket.id);
   },
   downloadUrl: (id: string) => `/api/files/${id}/download`,
 };

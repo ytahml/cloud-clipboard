@@ -68,21 +68,18 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   if (path === "/api/clips" && request.method === "POST") {
     const content = await clipContent(request);
     if (content instanceof Response) return content;
-    const existing = await env.DB.prepare("SELECT id FROM clips WHERE content = ? AND expires_at > ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
-      .bind(content, now).first<{ id: string }>();
-    if (existing) {
-      await env.DB.batch([
-        env.DB.prepare("INSERT OR REPLACE INTO clips (id, content, created_at, expires_at) VALUES (?, ?, ?, ?)").bind(existing.id, content, now, now + config(env).retention),
-        env.DB.prepare("DELETE FROM clips WHERE content = ? AND id != ?").bind(content, existing.id),
-      ]);
-      return json({ id: existing.id });
-    }
     const id = crypto.randomUUID();
-    await env.DB.batch([
-      env.DB.prepare("INSERT INTO clips (id, content, created_at, expires_at) VALUES (?, ?, ?, ?)").bind(id, content, now, now + config(env).retention),
+    const results = await env.DB.batch<{ id: string }>([
+      env.DB.prepare(`INSERT OR REPLACE INTO clips (id, content, created_at, expires_at)
+        VALUES (COALESCE((SELECT id FROM clips WHERE content = ? AND expires_at > ? ORDER BY created_at DESC, rowid DESC LIMIT 1), ?), ?, ?, ?)`)
+        .bind(content, now, id, content, now, now + config(env).retention),
+      env.DB.prepare("DELETE FROM clips WHERE content = ? AND rowid != (SELECT MAX(rowid) FROM clips WHERE content = ?)").bind(content, content),
       env.DB.prepare("DELETE FROM clips WHERE id NOT IN (SELECT id FROM clips ORDER BY created_at DESC, rowid DESC LIMIT ?)").bind(CLIP_LIMIT),
+      env.DB.prepare("SELECT id FROM clips WHERE content = ?").bind(content),
     ]);
-    return json({ id }, 201);
+    const saved = results[3].results[0];
+    if (!saved) throw new Error("Saved clip missing from transaction result");
+    return json({ id: saved.id }, saved.id === id ? 201 : 200);
   }
 
   if (path === "/api/clips" && request.method === "DELETE") { await env.DB.prepare("DELETE FROM clips").run(); return json({ ok: true }); }
@@ -126,11 +123,13 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 
   const complete = path.match(/^\/api\/files\/([^/]+)\/complete$/);
   if (complete && request.method === "POST") {
-    const row = await env.DB.prepare("SELECT object_key, size FROM files WHERE id = ? AND status = 'pending'").bind(complete[1]).first<{ object_key: string; size: number }>();
+    const row = await env.DB.prepare("SELECT object_key, size FROM files WHERE id = ? AND expires_at > ?").bind(complete[1], now).first<{ object_key: string; size: number }>();
     if (!row) return json({ error: "上传任务不存在" }, 404);
     const object = await env.FILES.head(row.object_key);
     if (!object || object.size !== row.size) return json({ error: "文件尚未完整上传" }, 409);
-    await env.DB.prepare("UPDATE files SET status = 'ready' WHERE id = ?").bind(complete[1]).run();
+    const result = await env.DB.prepare("UPDATE files SET status = 'ready' WHERE id = ? AND expires_at > ?")
+      .bind(complete[1], Math.floor(Date.now() / 1000)).run();
+    if (result.meta.changes === 0) return json({ error: "上传任务不存在或已过期" }, 404);
     return json({ ok: true });
   }
 

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createTestHarness } from "wrangler";
+import handler from "./index.js";
 
 const server = createTestHarness({ workers: [{ configPath: "./wrangler.jsonc" }] });
 const worker = server.getWorker<Env>();
@@ -65,6 +66,76 @@ describe("clipboard HTTP API", () => {
     expect(result.clips[0]?.content).toBe("repeat me");
   });
 
+  it("keeps distinct history when overlapping requests save the same new text", async () => {
+    for (let index = 1; index <= 19; index += 1) await saveClip(`history-${index}`);
+    const env = await worker.getEnv();
+    // Hold standalone duplicate reads until both requests have observed the same state.
+    // Keep each native D1 batch intact so the test preserves transaction semantics.
+    let reads = 0, releaseReads: () => void = () => {};
+    const bothReads = new Promise<void>((resolve) => { releaseReads = resolve; });
+    const originals = new WeakMap<D1PreparedStatement, D1PreparedStatement>();
+    function wrapStatement(statement: D1PreparedStatement, sql: string): D1PreparedStatement {
+      const wrapped = new Proxy(statement, { get(target, property) {
+        if (property === "bind") return (...values: unknown[]) => wrapStatement(target.bind(...values), sql);
+        if (property === "first" && sql.startsWith("SELECT id FROM clips WHERE content =")) return async () => {
+          const result = await target.first();
+          if (++reads === 2) releaseReads();
+          await bothReads;
+          return result;
+        };
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      } });
+      originals.set(wrapped, statement);
+      return wrapped;
+    }
+    const DB = new Proxy(env.DB, { get(target, property) {
+      if (property === "prepare") return (sql: string) => wrapStatement(target.prepare(sql), sql);
+      if (property === "batch") return (statements: D1PreparedStatement[]) => target.batch(statements.map((statement) => originals.get(statement) ?? statement));
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const background: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil: (promise: Promise<unknown>) => { background.push(promise); }, passThroughOnException() {}, props: {},
+      get exports(): ExecutionContext["exports"] { throw new Error("unexpected exports access"); },
+      get tracing(): ExecutionContext["tracing"] { throw new Error("unexpected tracing access"); },
+    } satisfies ExecutionContext;
+    const saves = await Promise.all(Array.from({ length: 2 }, async () => {
+      const request = new Request("http://clipboard.test/api/clips", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "shared text" }),
+      });
+      // Node's Request has no Workers cf metadata; this handler uses standard fields only.
+      const response = await handler.fetch(request as Parameters<typeof handler.fetch>[0], { ...env, DB }, ctx);
+      return { response, body: await response.json() as { id: string } };
+    }));
+    await Promise.all(background);
+
+    expect(new Set(saves.map(({ body }) => body.id)).size).toBe(1);
+    expect(saves.filter(({ response }) => response.status === 201)).toHaveLength(1);
+    const result = await snapshot();
+    expect(result.clips).toHaveLength(20);
+    expect(new Set(result.clips.map(({ content }) => content)).size).toBe(20);
+    expect(result.clips.at(-1)?.content).toBe("history-1");
+  });
+
+  it("removes old duplicates before applying the history limit", async () => {
+    const { DB } = await worker.getEnv();
+    const now = Math.floor(Date.now() / 1000);
+    for (let index = 1; index <= 19; index += 1) await saveClip(`history-${index}`);
+    await DB.batch(["old-copy", "new-copy"].map((id, index) => DB.prepare(
+      "INSERT INTO clips (id, content, created_at, expires_at) VALUES (?, ?, ?, ?)",
+    ).bind(id, "shared text", now + index, now + 86400)));
+
+    const saved = await saveClip("shared text");
+    expect(saved.body.id).toBe("new-copy");
+    expect(saved.response.status).toBe(200);
+    const result = await snapshot();
+    expect(result.clips).toHaveLength(20);
+    expect(new Set(result.clips.map(({ content }) => content)).size).toBe(20);
+    expect(result.clips.some(({ content }) => content === "history-1")).toBe(true);
+  });
+
   it("deduplicates when the active record is edited to match history", async () => {
     const history = await saveClip("same content");
     const active = await saveClip("different content");
@@ -103,5 +174,43 @@ describe("clipboard HTTP API", () => {
     expect(response.status).toBe(400);
     const result = await snapshot();
     expect(result.clips.map((clip) => clip.content)).toEqual(["keep me"]);
+  });
+
+  async function pendingFile(expiresAt = Math.floor(Date.now() / 1000) + 86400) {
+    const env = await worker.getEnv();
+    await env.DB.prepare("INSERT INTO files (id, object_key, name, size, content_type, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)")
+      .bind("file-id", "test/file", "file.txt", 4, "text/plain", expiresAt - 86400, expiresAt).run();
+    return env;
+  }
+
+  const completeFile = () => worker.fetch("http://clipboard.test/api/files/file-id/complete", { method: "POST" });
+
+  it("replays completion without duplicating the file or extending retention", async () => {
+    const { DB, FILES } = await pendingFile();
+    await FILES.put("test/file", "data");
+    const before = await DB.prepare("SELECT expires_at FROM files WHERE id = 'file-id'").first();
+
+    expect((await completeFile()).status).toBe(200);
+    expect((await completeFile()).status).toBe(200);
+    expect(await DB.prepare("SELECT status, expires_at FROM files").all()).toMatchObject({
+      results: [{ status: "ready", ...before }],
+    });
+  });
+
+  it("still checks object existence and size when completing or replaying a file", async () => {
+    const { FILES } = await pendingFile();
+    expect((await completeFile()).status).toBe(409);
+    await FILES.put("test/file", "wrong size");
+    expect((await completeFile()).status).toBe(409);
+    await FILES.put("test/file", "data");
+    expect((await completeFile()).status).toBe(200);
+    await FILES.delete("test/file");
+    expect((await completeFile()).status).toBe(409);
+  });
+
+  it("does not complete an expired upload", async () => {
+    const { FILES } = await pendingFile(Math.floor(Date.now() / 1000) - 1);
+    await FILES.put("test/file", "data");
+    expect((await completeFile()).status).toBe(404);
   });
 });
