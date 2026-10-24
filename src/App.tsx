@@ -41,9 +41,12 @@ export function App() {
   const [remoteNotice, setRemoteNotice] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Clip>();
   const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [openMenu, setOpenMenu] = useState<string>();
 
   const initialized = useRef(false);
+  const refreshSequence = useRef(0);
+  const settledRefresh = useRef(0);
   const newestId = useRef<string | undefined>(undefined);
   const selectedIdRef = useRef<string | undefined>(undefined);
   const activeIdRef = useRef<string | undefined>(undefined);
@@ -56,6 +59,7 @@ export function App() {
   const persistRef = useRef<() => Promise<boolean>>(async () => true);
   const pendingDeleteRef = useRef<PendingDelete | undefined>(undefined);
   const clearTimer = useRef<number | undefined>(undefined);
+  const clearingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const setEditorMode = (mode: EditorMode) => { editorModeRef.current = mode; setEditorModeState(mode); };
@@ -95,9 +99,19 @@ export function App() {
     newestId.current = next.clips[0]?.id;
   }, []);
 
-  const refresh = useCallback(async (announceRemote = false) => {
-    try { applySnapshot(await api.snapshot(), announceRemote); }
+  const refresh = useCallback(async (announceRemote = false, afterMutation = false) => {
+    const sequence = ++refreshSequence.current;
+    // A completed write invalidates snapshots requested before that write.
+    if (afterMutation) settledRefresh.current = sequence;
+    try {
+      const next = await api.snapshot();
+      if (sequence < settledRefresh.current) return;
+      settledRefresh.current = sequence;
+      applySnapshot(next, announceRemote);
+    }
     catch (error) {
+      if (sequence < settledRefresh.current) return;
+      settledRefresh.current = sequence;
       setConnected(false);
       setStatus(error instanceof Error ? error.message : "连接失败");
     }
@@ -152,7 +166,7 @@ export function App() {
         setEditorMode("saved");
         setConnected(true);
         setStatus(wasForked ? "已基于历史创建新记录" : "已同步");
-        await refresh(false);
+        await refresh(false, true);
         return true;
       } catch (error) {
         const retryable = !(error instanceof ApiError) || error.status >= 500;
@@ -189,6 +203,8 @@ export function App() {
   }, []);
 
   const queueSave = (value: string) => {
+    if (clearingRef.current) return;
+    initialized.current = true;
     setText(value);
     if (editorModeRef.current === "history" || editorModeRef.current === "expired") {
       activeIdRef.current = undefined;
@@ -203,17 +219,18 @@ export function App() {
     schedulePersist();
   };
 
-  const flushPending = async () => {
+  const flushPending = useCallback(async () => {
     window.clearTimeout(saveTimer.current);
-    if (savePromise.current) {
-      const saved = await savePromise.current;
+    window.clearTimeout(retryTimer.current);
+    while (savePromise.current || pendingDraft.current !== null) {
+      const saved = await persistRef.current();
       if (!saved) return false;
     }
-    return pendingDraft.current === null ? true : persistRef.current();
-  };
+    return true;
+  }, []);
 
   const openClip = async (clip: Clip) => {
-    if (!await flushPending()) return;
+    if (clearingRef.current || !await flushPending() || clearingRef.current) return;
     setText(clip.content);
     activeIdRef.current = undefined;
     forkedFromHistory.current = false;
@@ -226,7 +243,8 @@ export function App() {
   };
 
   const startNew = async () => {
-    if (!await flushPending()) return;
+    if (clearingRef.current || !await flushPending() || clearingRef.current) return;
+    initialized.current = true;
     setText("");
     activeIdRef.current = undefined;
     forkedFromHistory.current = false;
@@ -245,14 +263,27 @@ export function App() {
 
   const finalizeDelete = useCallback(async (pending: PendingDelete) => {
     if (pendingDeleteRef.current?.clip.id !== pending.clip.id) return;
+    if (!await flushPending()) {
+      if (pendingDeleteRef.current?.clip.id === pending.clip.id) {
+        pendingDeleteRef.current = undefined;
+        setPendingDelete(undefined);
+      }
+      return;
+    }
+    // Undo remains available while a slow save is finishing.
+    if (pendingDeleteRef.current?.clip.id !== pending.clip.id) return;
     pendingDeleteRef.current = undefined;
     setPendingDelete(undefined);
-    try { await api.deleteClip(pending.clip.id); await refresh(false); }
+    if (activeIdRef.current === pending.clip.id) {
+      activeIdRef.current = undefined;
+      setEditorMode("history");
+    }
+    try { await api.deleteClip(pending.clip.id); await refresh(false, true); }
     catch (error) { setStatus(error instanceof Error ? `删除失败：${error.message}` : "删除失败"); await refresh(false); }
-  }, [refresh]);
+  }, [flushPending, refresh]);
 
   const beginDelete = (clip: Clip) => {
-    if (pendingDeleteRef.current) return;
+    if (clearingRef.current || pendingDeleteRef.current) return;
     const pending = { clip, timer: 0 };
     pending.timer = window.setTimeout(() => { void finalizeDelete(pending); }, UNDO_DELAY);
     pendingDeleteRef.current = pending;
@@ -270,24 +301,25 @@ export function App() {
   };
 
   const clearClips = async () => {
+    if (clearingRef.current) return;
     if (!confirmClear) {
       setConfirmClear(true);
       clearTimer.current = window.setTimeout(() => setConfirmClear(false), UNDO_DELAY);
       return;
     }
+    clearingRef.current = true;
+    setClearing(true);
     window.clearTimeout(clearTimer.current);
-    window.clearTimeout(saveTimer.current);
-    window.clearTimeout(retryTimer.current);
     window.clearTimeout(pendingDeleteRef.current?.timer);
-    if (savePromise.current) await savePromise.current;
-    window.clearTimeout(saveTimer.current);
-    window.clearTimeout(retryTimer.current);
     pendingDeleteRef.current = undefined;
-    pendingDraft.current = null;
     setPendingDelete(undefined);
     setConfirmClear(false);
+    setOpenMenu(undefined);
     try {
+      if (!await flushPending()) return;
+      setStatus("正在清空…");
       await api.clearClips();
+      settledRefresh.current = ++refreshSequence.current;
       setData((current) => ({ ...current, clips: [] }));
       setText("");
       activeIdRef.current = undefined;
@@ -295,12 +327,13 @@ export function App() {
       setEditorMode("new");
       setStatus("剪切板记录已清空");
     } catch (error) { setStatus(error instanceof Error ? `清空失败：${error.message}` : "清空失败"); }
+    finally { clearingRef.current = false; setClearing(false); }
   };
 
   const uploadFiles = async (files: File[]) => {
     for (const file of files) {
       setUploads((old) => ({ ...old, [file.name]: 0 }));
-      try { await api.upload(file, (progress) => setUploads((old) => ({ ...old, [file.name]: progress }))); await refresh(false); }
+      try { await api.upload(file, (progress) => setUploads((old) => ({ ...old, [file.name]: progress }))); await refresh(false, true); }
       catch (error) { setStatus(error instanceof Error ? error.message : "上传失败"); }
       finally { setUploads((old) => { const next = { ...old }; delete next[file.name]; return next; }); }
     }
@@ -334,36 +367,36 @@ export function App() {
       <section className="card clip-card" aria-labelledby="clipboard-title">
         <div className="card-title">
           <span><span className="section-icon" aria-hidden="true"><Clipboard size={18} /></span><span><b id="clipboard-title">临时剪切板</b><small>同一轮编辑自动保存为一条记录</small></span></span>
-          <div className="clipboard-heading-actions"><small className={`sync-status ${isErrorStatus(status) ? "is-error" : ""}`} aria-live="polite">{status}</small><button className="button button-ghost button-compact" onClick={() => void startNew()}><Plus size={15} />新建</button></div>
+          <div className="clipboard-heading-actions"><small className={`sync-status ${isErrorStatus(status) ? "is-error" : ""}`} aria-live="polite">{status}</small><button className="button button-ghost button-compact" disabled={clearing} onClick={() => void startNew()}><Plus size={15} />新建</button></div>
         </div>
 
         <div className="clipboard-layout">
           <div className="editor-pane">
             <div className="editor-meta"><span className={`mode-badge is-${editorMode}`}>{modeLabel}</span><span>{text.length.toLocaleString()} 字符</span></div>
             <label className="sr-only" htmlFor="clipboard-content">剪切板内容</label>
-            <textarea ref={textareaRef} id="clipboard-content" value={text} onChange={(event) => queueSave(event.target.value)} placeholder="粘贴文本、链接或代码…" spellCheck="false" />
+            <textarea ref={textareaRef} id="clipboard-content" readOnly={clearing} value={text} onChange={(event) => queueSave(event.target.value)} placeholder="粘贴文本、链接或代码…" spellCheck="false" />
             <div className="clip-actions">
               {confirmClear ? <button className="button button-ghost" onClick={() => setConfirmClear(false)}>取消</button> : <span>修改历史记录时会创建副本</span>}
-              <button className={`button ${confirmClear ? "button-danger" : "button-ghost"}`} disabled={data.clips.length === 0 && text.length === 0} onClick={() => void clearClips()}><Trash2 size={16} />{confirmClear ? "确认清空全部" : "清空"}</button>
+              <button className={`button ${confirmClear ? "button-danger" : "button-ghost"}`} disabled={clearing || (data.clips.length === 0 && text.length === 0)} onClick={() => void clearClips()}><Trash2 size={16} />{clearing ? "正在清空…" : confirmClear ? "确认清空全部" : "清空"}</button>
               <button className="button button-primary" disabled={!text} onClick={() => void copyText(text)}>{copied ? <Check size={17} /> : <Copy size={17} />}{copied ? "已复制" : "复制内容"}</button>
             </div>
           </div>
 
           <aside className="history-pane" aria-labelledby="history-title">
             <div className="history-heading"><span><b id="history-title">最近记录</b><small>{visibleClips.length} / 20</small></span><small>最新优先</small></div>
-            {remoteNotice && data.clips[0] && <button className="remote-notice" onClick={() => void openClip(data.clips[0])}>发现新的云端记录，查看最新</button>}
+            {remoteNotice && data.clips[0] && <button className="remote-notice" disabled={clearing} onClick={() => void openClip(data.clips[0])}>发现新的云端记录，查看最新</button>}
             <ol className="clip-history">
               {visibleClips.length === 0 && <li className="history-empty"><Clipboard size={22} /><span><b>还没有文本记录</b><small>在左侧输入后会自动保存</small></span></li>}
               {visibleClips.map((clip) => <li key={clip.id} className={selectedId === clip.id ? "is-selected" : ""}>
-                <button className="history-open" title={clip.content} onClick={() => void openClip(clip)}>
+                <button className="history-open" disabled={clearing} title={clip.content} onClick={() => void openClip(clip)}>
                   <span>{compactText(clip.content)}</span>
                   <small><time dateTime={clip.createdAt}>{formatClipTime(clip.createdAt)}</time><em>{remaining(clip.expiresAt)}</em></small>
                 </button>
                 <div className="history-actions">
                   <button aria-label={`复制记录：${compactText(clip.content).slice(0, 24)}`} title="复制" onClick={() => void copyText(clip.content, clip.id)}>{copiedClip === clip.id ? <Check size={16} /> : <Copy size={16} />}</button>
-                  <button className="history-delete" disabled={Boolean(pendingDelete)} aria-label="删除这条记录" title="删除" onClick={() => beginDelete(clip)}><Trash2 size={16} /></button>
-                  <button className="history-more" aria-label="更多操作" aria-expanded={openMenu === clip.id} onClick={() => setOpenMenu((current) => current === clip.id ? undefined : clip.id)}><MoreHorizontal size={17} /></button>
-                  {openMenu === clip.id && <div className="history-menu" role="menu"><button role="menuitem" disabled={Boolean(pendingDelete)} onClick={() => beginDelete(clip)}><Trash2 size={15} />删除记录</button></div>}
+                  <button className="history-delete" disabled={clearing || Boolean(pendingDelete)} aria-label="删除这条记录" title="删除" onClick={() => beginDelete(clip)}><Trash2 size={16} /></button>
+                  <button className="history-more" disabled={clearing} aria-label="更多操作" aria-expanded={openMenu === clip.id} onClick={() => setOpenMenu((current) => current === clip.id ? undefined : clip.id)}><MoreHorizontal size={17} /></button>
+                  {openMenu === clip.id && <div className="history-menu" role="menu"><button role="menuitem" disabled={clearing || Boolean(pendingDelete)} onClick={() => beginDelete(clip)}><Trash2 size={15} />删除记录</button></div>}
                 </div>
               </li>)}
             </ol>
@@ -388,7 +421,7 @@ export function App() {
                 <div className="file-actions">
                   <button aria-label={`复制 ${file.name} 的下载链接`} title="复制下载链接" onClick={async () => { await navigator.clipboard.writeText(new URL(api.downloadUrl(file.id), location.href).href); setCopiedLink(file.id); window.setTimeout(() => setCopiedLink(undefined), 1_200); }}>{copiedLink === file.id ? <Check size={17} /> : <Link size={17} />}</button>
                   <a aria-label={`下载 ${file.name}`} title="下载" href={api.downloadUrl(file.id)}><Download size={17} /></a>
-                  <button aria-label={`删除 ${file.name}`} title="删除" onClick={() => api.deleteFile(file.id).then(() => refresh(false))}><X size={17} /></button>
+                  <button aria-label={`删除 ${file.name}`} title="删除" onClick={() => api.deleteFile(file.id).then(() => refresh(false, true))}><X size={17} /></button>
                 </div>
               </article>)}
             </div>

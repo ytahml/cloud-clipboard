@@ -29,8 +29,10 @@
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/snapshot` | Return active clips, ready files, viewer, storage label |
-| POST | `/api/clips` | Insert a clip or clear all when blank |
+| POST | `/api/clips` | Save text, reuse matching active history, and keep at most 20 records; reject blank text |
+| PATCH | `/api/clips/:id` | Edit an active record and merge matching history atomically; return 404 for a missing or expired target |
 | DELETE | `/api/clips` | Delete all clips |
+| DELETE | `/api/clips/:id` | Delete one clip |
 | POST | `/api/files/upload-ticket` | Create pending metadata and return signed PUT URL |
 | POST | `/api/files/:id/complete` | Verify R2 object and mark ready |
 | GET | `/api/files/:id/download` | Redirect to signed GET URL |
